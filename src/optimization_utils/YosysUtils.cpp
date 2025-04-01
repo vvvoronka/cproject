@@ -1,0 +1,165 @@
+/**
+ * @file YosysUtils.cpp
+ * @brief Реализация утилит для работы с Yosys
+ * @details Содержит реализацию функций для взаимодействия с Yosys через командную строку
+ */
+
+#include <algorithm>
+#include <functional>
+#include <iostream>
+#include <UtilsCommands.hpp>
+#include <YosysUtils.hpp>
+#include <string>
+#include <thread>
+#include <vector>
+
+/// @brief Ключевое слово для идентификации команд Yosys
+static std::string d_utilWord = "yosys";
+/// @brief Длина служебной информации о команде
+static int d_utilLen = 7;
+
+/// @brief Список слов, указывающих на наличие ошибки в выводе
+static std::vector<std::string> d_incorrectWords = {"ERROR"};
+
+/**
+ * @brief Стандартный исполнитель команд Yosys
+ * @param i_command Команда для выполнения
+ * @param i_info Информация о команде
+ * @return CommandWorkResult Результат выполнения команды
+ * @details Функция выполняет команду через popen и обрабатывает вывод,
+ * анализируя его на наличие ошибок и результатов выполнения
+ */
+CommandWorkResult YosysUtils::standartExecutor(
+    std::string i_command, std::vector<StandartCommandInfo> i_info) {
+  FILE *abcOutput;
+  char out[80];
+  bool correct = true;
+
+  if (i_command.find("2>&1") == std::string::npos) i_command += " 2>&1";
+
+  // executing i_command with own read stream
+  abcOutput = popen(i_command.c_str(), "r");
+
+  std::string result;
+  // parsing output
+  while (fgets(out, sizeof(out), abcOutput)) {
+    result += out;
+  }
+
+  // looking for each i_command execution
+  int firstPos = result.find(d_utilWord, 0);
+  CommandWorkResult workResult;
+
+  bool inputParsed = false;
+
+  // if there was an error
+  if (firstPos != std::string::npos) {
+    for (auto currentCommand : i_info) {
+      int secondPos = result.find(d_utilWord, firstPos + 1);
+
+      // перебираем все слова-ошибки
+      for (auto word : d_incorrectWords) {
+        int errorPos = result.find(word, firstPos);
+
+        // if there was an error
+        if (secondPos == std::string::npos && errorPos == std::string::npos) {
+          std::string errText =
+              "Something went wrong during files parsing in YosysUtils\n";
+
+          std::cerr << errText;
+          workResult.commandsOutput.clear();
+          workResult.commandsOutput["error"] = errText;
+          workResult.commandsOutput["fileRead"] = inputParsed;
+
+          correct = false;
+          break;
+        }
+
+        // If something went wrong during read
+        // and abc wrote something
+        if (errorPos != std::string::npos &&
+            (errorPos < secondPos || secondPos == std::string::npos)) {
+          int endPos = secondPos - errorPos - 1;
+          if (secondPos == std::string::npos)
+            endPos = result.size() - errorPos - 1;
+
+          std::string errText = "Incorrect " + currentCommand.info + ": " +
+                                result.substr(errorPos, endPos) + '\n';
+
+          std::cerr << errText;
+          workResult.commandsOutput.clear();
+          workResult.commandsOutput["error"] = errText;
+          workResult.commandsOutput["fileRead"] = inputParsed;
+
+          correct = false;
+          break;
+        }
+      }
+
+      firstPos = secondPos;
+      inputParsed = true;
+    }
+  } else {
+    std::string errText =
+        "Something went wrong during files parsing in YosysUtils: \n";
+    errText += result;
+
+    std::cerr << errText;
+    workResult.commandsOutput.clear();
+    workResult.commandsOutput["error"] = errText;
+    workResult.commandsOutput["fileRead"] = inputParsed;
+
+    correct = false;
+  }
+  workResult.correct = correct;
+
+  return workResult;
+}
+
+std::vector<StandartCommandInfo> YosysUtils::parseCommand(
+    std::string i_command) {
+  // we use the fact, that each i_command is surrounded by "
+  int end, start;
+  std::vector<StandartCommandInfo> info;
+
+  start = i_command.find('"');
+  end = i_command.find('"', start + 1);
+
+  while (start != std::string::npos) {
+    int commandNameStart = i_command.find_first_not_of(" ", start + 1);
+    int commandNameEnd = std::min(i_command.find(" ", commandNameStart),
+                                  i_command.find('"', commandNameStart));
+
+    // sumLen: end is bigger on 1 than real i_command ending, start is on 1
+    // smaller, but we have \n in the end, so we do not add 1 info: we use
+    // substr, "commandNameEnd - commandNameStart + 1" will show i_command name
+    // with a space
+    StandartCommandInfo commandInfo = {
+        .sumLen = end - start,
+        .info = i_command.substr(commandNameStart,
+                                 commandNameEnd - commandNameStart)};
+
+    info.push_back(commandInfo);
+
+    // next two "
+    start = i_command.find('"', end + 1);
+    end = i_command.find('"', start + 1);
+  }
+
+  return info;
+}
+
+CommandWorkResult YosysUtils::optVerilog(std::string i_inputFileName,
+                                         std::string i_outputFileName,
+                                         std::string i_directory) {
+  return runCommand(YosysCommands::optVerilogCommand, standartExecutor,
+                    i_directory, i_inputFileName, i_directory,
+                    i_outputFileName);
+}
+
+CommandWorkResult YosysUtils::writeFirrtl(std::string i_inputFileName,
+                                          std::string i_outputFileName,
+                                          std::string i_directory) {
+  return runCommand(YosysCommands::writeFirrtlCommand, standartExecutor,
+                    i_directory, i_inputFileName, i_outputFileName);
+}
